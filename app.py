@@ -5,14 +5,12 @@ from google.oauth2.service_account import Credentials
 import os, time, json
 
 # ===========================================
-# 1. 基本設定（ここはいじらなくてOK）
+# 1. 基本設定
 # ===========================================
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SPREADSHEET_ID = "1iJXDxkFM7A-YGg1BvgtOhXS_AYdIN5goDQWHvSj79_k"
 
-# ===========================================
-# 2. AIへの指示（★ここをGitHub上で書き換えればOK！）
-# ===========================================
+# 2. AIへの指示
 SYSTEM_PROMPT = """
 あなたはプロの営業監査官です。以下のルールに従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
 
@@ -28,7 +26,7 @@ SYSTEM_PROMPT = """
 """
 
 # ===========================================
-# 3. メインプログラム（ここもいじらなくてOK）
+# 3. メインプログラム
 # ===========================================
 st.set_page_config(page_title="爆速・テレアポ分析AI", page_icon="⚡")
 genai.configure(api_key=GEMINI_API_KEY)
@@ -44,13 +42,8 @@ def get_sheets_service():
         st.error(f"スプレッドシート認証エラー: {e}")
         return None
 
-def get_working_model():
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        pro = [m for m in models if '1.5-pro' in m]
-        return pro[0] if pro else "models/gemini-1.5-pro-latest"
-    except:
-        return "models/gemini-1.5-pro-latest"
+# ★モデル名を最も安定しているものに固定しました
+MODEL_NAME = "gemini-1.5-pro"
 
 st.title("⚡ チーム用：テレアポ高精度分析")
 uploaded_files = st.file_uploader("mp3ファイルをドロップ", type=["mp3"], accept_multiple_files=True)
@@ -60,9 +53,9 @@ if st.button("🚀 爆速解析スタート"):
         st.error("ファイルを選択してください。")
     else:
         sheets_service = get_sheets_service()
-        model_name = get_working_model()
+        # 安全設定を考慮しつつAIモデルを準備
         model = genai.GenerativeModel(
-            model_name=model_name,
+            model_name=MODEL_NAME,
             generation_config={"temperature": 0},
             system_instruction=SYSTEM_PROMPT
         )
@@ -73,12 +66,17 @@ if st.button("🚀 爆速解析スタート"):
         for i, file in enumerate(uploaded_files):
             st.write(f"⏳ {file.name} を分析中...")
             try:
+                # 録音データの解析
                 response = model.generate_content([
                     "録音を分析し、ルールに従って結果のみ（数値または数値+⚪︎）を出力してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
-                # AIの回答を取得（空っぽ対策付き）
-                output = response.text.strip() if (response.candidates and response.candidates[0].content.parts) else "0"
+                
+                # 回答の取り出し（安全フィルター対策付き）
+                if response.candidates and response.candidates[0].content.parts:
+                    output = response.text.strip()
+                else:
+                    output = "判定不可"
                 
                 # スプレッドシートへ保存
                 now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -91,7 +89,7 @@ if st.button("🚀 爆速解析スタート"):
 
                 results.append({"ファイル名": file.name, "結果": output, "状態": "✅ 完了"})
             except Exception as e:
-                st.error(f"エラー: {file.name} - {e}")
+                st.error(f"解析エラー: {file.name} - {e}")
                 results.append({"ファイル名": file.name, "結果": "-", "状態": "❌ エラー"})
             
             progress_bar.progress((i + 1) / len(uploaded_files))
