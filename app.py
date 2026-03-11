@@ -24,8 +24,18 @@ def get_sheets_service():
         st.error(f"スプレッドシートの認証エラー: {e}")
         return None
 
-# ★モデルを「1.5-flash」に固定。これでスピードが数倍上がります
-MODEL_NAME = "models/gemini-1.5-flash"
+def get_working_model():
+    """今使えるモデルを自動で探す（あなたの環境で動く唯一のロジック）"""
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        pro_models = [m for m in models if '1.5-pro' in m]
+        if pro_models:
+            latest = [m for m in pro_models if 'latest' in m]
+            return latest[0] if latest else pro_models[0]
+        flash_models = [m for m in models if '1.5-flash' in m]
+        return flash_models[0] if flash_models else models[0]
+    except Exception as e:
+        return "models/gemini-1.5-pro-latest"
 
 st.title("⚡ チーム用：テレアポ高精度分析")
 st.success("ファイルをドロップするだけで全自動解析し、スプレッドシートに記録します。")
@@ -37,8 +47,8 @@ if st.button("🚀 爆速解析スタート"):
         st.error("ファイルを選択してください。")
     else:
         sheets_service = get_sheets_service()
+        correct_model_name = get_working_model()
         
-        # 安全設定
         safe_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -46,21 +56,25 @@ if st.button("🚀 爆速解析スタート"):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
 
-        # プロンプト（指示内容）
-        system_prompt = """あなたはプロの営業監査官です。以下の【判定ルール】に従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
+        # ★★★ ここに新しいプロンプトを注入しました ★★★
+        system_prompt = """あなたはプロの営業監査官です。以下の判定ルールに従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
 
 【判定ルール】
 1. 顧客が「結構です」「間に合ってます」「高い」等の『拒絶・断り』を発言する。
 2. その直後に、営業担当者が『会話を継続』し、かつ『日程打診（アポイントの提案）』を行う。
 この「1と2がセットになった回数」のみをカウントします。
 
+【除外・注意点】
+・断られる前の日程打診はカウントしないでください。
+・会話を継続させても、日程打診まで続けなければノーカウントです。
+
 【出力ルール】
 ・結果は「数値のみ」出力してください（例: 2）
-・ただし、アポイントを承諾された（成功した）場合は、数値の後に「⚪︎」を付けてください（例: 1⚪︎）
+・ただし、アポイントに繋がった場合は、数値の後に「⚪︎」を付けてください（例: 1⚪︎）
 ・条件に合う切り返しが0回の場合は「0」と出力してください。"""
 
         model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
+            model_name=correct_model_name,
             generation_config={"temperature": 0},
             safety_settings=safe_settings,
             system_instruction=system_prompt
@@ -70,13 +84,11 @@ if st.button("🚀 爆速解析スタート"):
         results_table = []
         
         for i, file in enumerate(uploaded_files):
-            # 表示を少し親切にしました
-            status_text = st.empty()
-            status_text.write(f"⏳ {file.name} をAIが視聴中... ({i+1}/{len(uploaded_files)})")
+            st.write(f"⏳ {file.name} を分析中... ({i+1}/{len(uploaded_files)})")
             
             try:
                 response = model.generate_content([
-                    "録音を分析し、ルールに従って『切り返しの回数（成功なら⚪︎を付与）』を数値のみで回答してください。",
+                    "録音を分析し、ルールに従って『切り返し』の回数（アポ成功なら⚪︎を付与）を数値のみで回答してください。不明な場合は0と出力してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
                 
@@ -85,7 +97,6 @@ if st.button("🚀 爆速解析スタート"):
                 else:
                     count = "0 (判定不能)"
                 
-                # スプシ書き込み
                 now = time.strftime("%Y-%m-%d %H:%M:%S")
                 if sheets_service:
                     sheets_service.spreadsheets().values().append(
@@ -95,13 +106,13 @@ if st.button("🚀 爆速解析スタート"):
                     ).execute()
 
                 st.write(f"  ✅ {file.name} -> **{count}**")
-                results_table.append({"ファイル名": file.name, "結果": count, "状態": "✅ 完了"})
+                results_table.append({"ファイル名": file.name, "回数": count, "状態": "✅ 完了"})
                 
             except Exception as e:
                 st.error(f"❌ {file.name} でエラー: {e}")
-                results_table.append({"ファイル名": file.name, "結果": "-", "状態": f"エラー"})
+                results_table.append({"ファイル名": file.name, "回数": "-", "状態": f"エラー"})
 
             progress_bar.progress((i + 1) / len(uploaded_files))
 
-        st.success("すべての解析が終了しました！スプレッドシートを確認してください。")
+        st.success("すべての解析が終了しました！")
         st.table(results_table)
