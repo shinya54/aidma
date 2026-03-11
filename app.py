@@ -1,11 +1,11 @@
 import streamlit as st
 import google.generativeai as genai
 from googleapiclient.discovery import build
-from google.oauth2.service_account import Credentials # ← ロボット用の鍵を開ける部品に変更
-import os, time
+from google.oauth2.service_account import Credentials
+import os, time, json
 
 # ================= 設定情報 =================
-# APIキーは直接書かず、Streamlitの「秘密の金庫 (secrets)」から呼び出します
+# クラウドの金庫（Secrets）から鍵を呼び出します
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SPREADSHEET_ID = "1iJXDxkFM7A-YGg1BvgtOhXS_AYdIN5goDQWHvSj79_k"
 # ===========================================
@@ -14,11 +14,12 @@ st.set_page_config(page_title="爆速・テレアポ分析AI", page_icon="⚡")
 genai.configure(api_key=GEMINI_API_KEY)
 
 def get_sheets_service():
-    """クラウドの「秘密の金庫」に入れたロボットの鍵を使ってスプシに接続します"""
+    """クラウドの金庫に入れたロボットのJSON鍵を使ってスプシに接続"""
     try:
-        # st.secrets["gcp_service_account"] にJSONの中身を設定する前提です
+        # JSON文字列を辞書型に変換して認証
+        gcp_info = json.loads(st.secrets["GCP_JSON"])
         creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
+            gcp_info,
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
         return build('sheets', 'v4', credentials=creds)
@@ -39,7 +40,7 @@ def get_working_model():
         return "models/gemini-1.5-pro-latest"
 
 st.title("⚡ チーム用：テレアポ高精度分析")
-st.success("ファイルをドロップするだけで全自動解析します。")
+st.success("ファイルをドロップするだけで全自動解析し、スプレッドシートに記録します。")
 
 uploaded_files = st.file_uploader("mp3ファイルをドロップ", type=["mp3"], accept_multiple_files=True)
 
@@ -104,5 +105,5 @@ if st.button("🚀 爆速解析スタート"):
 
             progress_bar.progress((i + 1) / len(uploaded_files))
 
-        st.success("すべての解析が終了しました！スプレッドシートを確認してください。")
+        st.success("すべての解析が終了しました！")
         st.table(results_table)
