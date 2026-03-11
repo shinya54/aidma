@@ -5,7 +5,6 @@ from google.oauth2.service_account import Credentials
 import os, time, json
 
 # ================= 設定情報 =================
-# クラウドの金庫（Secrets）から鍵を呼び出します
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SPREADSHEET_ID = "1iJXDxkFM7A-YGg1BvgtOhXS_AYdIN5goDQWHvSj79_k"
 # ===========================================
@@ -14,9 +13,7 @@ st.set_page_config(page_title="爆速・テレアポ分析AI", page_icon="⚡")
 genai.configure(api_key=GEMINI_API_KEY)
 
 def get_sheets_service():
-    """クラウドの金庫に入れたロボットのJSON鍵を使ってスプシに接続"""
     try:
-        # JSON文字列を辞書型に変換して認証
         gcp_info = json.loads(st.secrets["GCP_JSON"])
         creds = Credentials.from_service_account_info(
             gcp_info,
@@ -58,11 +55,22 @@ if st.button("🚀 爆速解析スタート"):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
 
-        system_prompt = """あなたはプロの営業監査官です。以下のルールに従って、テレアポ録音内の「切り返し」の回数をカウントし、数値のみを出力してください。
+        # ★ここからプロンプトを変更★
+        system_prompt = """あなたはプロの営業監査官です。以下の【判定ルール】に従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
 
-【切り返しの定義】
-・顧客が「結構です」「間に合ってます」「高い」などの『拒絶・断り』を発言した直後に、
-・営業担当者が『会話を継続しようとする発言』をしたセットを「1回」とカウントします。"""
+【判定ルール】
+1. 顧客が「結構です」「間に合ってます」「高い」等の『拒絶・断り』を発言する。
+2. その直後に、営業担当者が『会話を継続』し、かつ『日程打診（アポイントの提案）』を行う。
+この「1と2がセットになった回数」のみをカウントします。
+
+【除外・注意点】
+・顧客に断られる前の日程打診はカウントしないでください。
+・会話を継続しても、最終的に日程打診（具体的な日時提案）まで至らなかった場合はノーカウントです。
+
+【出力ルール】
+・結果は「数値のみ」出力してください（例: 2）
+・ただし、アポイントを承諾された（成功した）場合は、数値の後に「⚪︎」を付けてください（例: 1⚪︎）
+・条件に合う切り返しが0回の場合は「0」と出力してください。"""
 
         model = genai.GenerativeModel(
             model_name=correct_model_name,
@@ -78,8 +86,9 @@ if st.button("🚀 爆速解析スタート"):
             st.write(f"⏳ {file.name} を分析中... ({i+1}/{len(uploaded_files)})")
             
             try:
+                # ★ここも連動して変更★
                 response = model.generate_content([
-                    "録音を分析し、ルールに従って『切り返し』の回数を数値のみ（例: 2）で出力してください。不明な場合は0と出力してください。",
+                    "録音を分析し、ルールに従って『切り返しの回数（成功なら⚪︎を付与）』を数値のみで回答してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
                 
@@ -96,12 +105,12 @@ if st.button("🚀 爆速解析スタート"):
                         body={'values': [[file.name, count, now]]}
                     ).execute()
 
-                st.write(f"  ✅ {file.name} -> **{count} 回**")
-                results_table.append({"ファイル名": file.name, "回数": count, "状態": "✅ 完了"})
+                st.write(f"  ✅ {file.name} -> **{count}**")
+                results_table.append({"ファイル名": file.name, "結果": count, "状態": "✅ 完了"})
                 
             except Exception as e:
                 st.error(f"❌ {file.name} でエラー: {e}")
-                results_table.append({"ファイル名": file.name, "回数": "-", "状態": f"エラー"})
+                results_table.append({"ファイル名": file.name, "結果": "-", "状態": f"エラー"})
 
             progress_bar.progress((i + 1) / len(uploaded_files))
 
