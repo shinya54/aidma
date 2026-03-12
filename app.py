@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
-import os, time, json
+import os, time, json, re # ★ <result>タグを抽出するために re を追加しました
 
 # ================= 設定情報 =================
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -56,7 +56,7 @@ if st.button("🚀 爆速解析スタート"):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
 
-        # ★★★ ここに新しいプロンプトを注入しました ★★★
+        # ★ 変更点: Chain of Thought（思考プロセス）を導入したシステムプロンプト
         system_prompt = """あなたはプロの営業監査官です。以下の判定ルールに従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
 
 【判定ルール】
@@ -69,9 +69,15 @@ if st.button("🚀 爆速解析スタート"):
 ・会話を継続させても、日程打診まで続けなければノーカウントです。
 
 【出力ルール】
-・結果は「数値のみ」出力してください（例: 2）
-・ただし、アポイントに繋がった場合は、数値の後に「⚪︎」を付けてください（例: 1⚪︎）
-・条件に合う切り返しが0回の場合は「0」と出力してください。"""
+いきなり数値を出力するのではなく、必ず以下のフォーマットで出力してください。
+最初に該当したやり取りの理由を書き出し、最後に <result>数値</result> というタグで結果を囲んでください。アポ獲得時は⚪︎を付けます。
+
+出力例：
+思考プロセス：
+1回目：顧客「今は間に合ってます」に対し、営業が「来週のご都合はいかがですか？」と打診したためカウント（+1）
+2回目：顧客「高いですね」に対し、営業が価値の説明のみを行い、日程打診はしなかったため除外。
+最終的にアポには至らなかった。
+<result>1</result>"""
 
         model = genai.GenerativeModel(
             model_name=correct_model_name,
@@ -87,13 +93,20 @@ if st.button("🚀 爆速解析スタート"):
             st.write(f"⏳ {file.name} を分析中... ({i+1}/{len(uploaded_files)})")
             
             try:
+                # ★ 変更点: ユーザープロンプトもタグ出力の指示に合わせて微調整
                 response = model.generate_content([
-                    "録音を分析し、ルールに従って『切り返し』の回数（アポ成功なら⚪︎を付与）を数値のみで回答してください。不明な場合は0と出力してください。",
+                    "録音を分析し、ルールに従って思考プロセスを記述した上で、『切り返し』の回数（アポ成功なら⚪︎を付与）を <result> タグで囲んで回答してください。不明な場合は <result>0</result> と出力してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
                 
                 if response.candidates and response.candidates[0].content.parts:
-                    count = response.text.strip()
+                    full_text = response.text.strip()
+                    # ★ 変更点: LLMの回答（長文）から <result>〜</result> の中身の数値だけを抽出
+                    match = re.search(r'<result>(.*?)</result>', full_text)
+                    if match:
+                        count = match.group(1).strip()
+                    else:
+                        count = "0 (抽出エラー)"
                 else:
                     count = "0 (判定不能)"
                 
