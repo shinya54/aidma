@@ -2,14 +2,14 @@ import streamlit as st
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
-import os, time, json, re
+import os, time, json
 
 # ================= 設定情報 =================
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SPREADSHEET_ID = "1iJXDxkFM7A-YGg1BvgtOhXS_AYdIN5goDQWHvSj79_k"
 # ===========================================
 
-st.set_page_config(page_title="テレアポ分析AI", page_icon="⚡")
+st.set_page_config(page_title="爆速・テレアポ分析AI", page_icon="⚡")
 genai.configure(api_key=GEMINI_API_KEY)
 
 def get_sheets_service():
@@ -25,23 +25,26 @@ def get_sheets_service():
         return None
 
 def get_working_model():
-    """【復旧】以前確実に動いていたモデル選択ロジックです"""
+    """Flashモデルを最優先で探すロジックに変更しました"""
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        pro_models = [m for m in models if '1.5-pro' in m]
-        if pro_models:
-            latest = [m for m in pro_models if 'latest' in m]
-            return latest[0] if latest else pro_models[0]
+        # 1. まずはFlashを探す（爆速・格安）
         flash_models = [m for m in models if '1.5-flash' in m]
-        return flash_models[0] if flash_models else models[0]
+        if flash_models:
+            latest = [m for m in flash_models if 'latest' in m]
+            return latest[0] if latest else flash_models[0]
+        # 2. なければProを探す
+        pro_models = [m for m in models if '1.5-pro' in m]
+        return pro_models[0] if pro_models else models[0]
     except Exception as e:
-        return "models/gemini-1.5-pro-latest"
+        return "models/gemini-1.5-flash-latest"
 
-st.title("⚡ テレアポ分析AI")
+st.title("⚡ チーム用：テレアポ高精度分析 (Flashモード)")
+st.info("安くて速い『Gemini 1.5 Flash』を優先して使用しています。")
 
 uploaded_files = st.file_uploader("mp3ファイルをドロップ", type=["mp3"], accept_multiple_files=True)
 
-if st.button("🚀 解析スタート"):
+if st.button("🚀 爆速解析スタート"):
     if not uploaded_files:
         st.error("ファイルを選択してください。")
     else:
@@ -55,23 +58,17 @@ if st.button("🚀 解析スタート"):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
 
-        # --- 基準を反映したプロンプト ---
-        system_prompt = """あなたは営業専門の監査官です。
-以下の【1セット】の定義に従って、切り返し回数を数えてください。
+        system_prompt = """あなたはプロの営業監査官です。以下の判定ルールに従って、テレアポ録音内の「切り返し」の回数をカウントしてください。
 
-【切り返し1セットの定義】
-1. 顧客が「結構です」「いらない」と断る。
-2. 営業がその後に話を続け、最終的に「具体的な日程や時間の打診（○分だけ、来週なら等）」を行う。
+【判定ルール】
+1. 顧客が「結構です」「間に合ってます」「高い」等の『拒絶・断り』を発言する。
+2. その直後に、営業担当者が『会話を継続』し、かつ『日程打診（アポイントの提案）』を行う。
+この「1と2がセットになった回数」のみをカウントします。
 
-★重要な判定基準：
-・断られた直後に「商品の説明」や「メリットの提示」を挟むのはOKです。
-・ただし、説明だけで終わらずに、その流れの最後で必ず【日程の打診】まで行っていれば「1回」とカウントしてください。
-・どれだけ長く説明しても、最終的に日程を打診せずに引き下がった場合は「0回」です。
-・「担当者不在」や「外出中」への対応はカウントしません。
-
-【出力形式】
-最終結果：[数値]
-判定理由：（どの断りに対して、どのような説明を経て、最後にどう日程打診したか）"""
+【出力ルール】
+・結果は「数値のみ」出力してください（例: 2）
+・ただし、アポイントに繋がった場合は、数値の後に「⚪︎」を付けてください（例: 1⚪︎）
+・条件に合う切り返しが0回の場合は「0」と出力してください。"""
 
         model = genai.GenerativeModel(
             model_name=correct_model_name,
@@ -81,34 +78,38 @@ if st.button("🚀 解析スタート"):
         )
         
         progress_bar = st.progress(0)
+        results_table = []
         
         for i, file in enumerate(uploaded_files):
-            st.write(f"⏳ {file.name} を分析中...")
+            st.write(f"⏳ {file.name} を分析中... ({i+1}/{len(uploaded_files)})")
+            
             try:
                 response = model.generate_content([
-                    "ルールに従って分析し、最終結果：[数値] の形式で出力してください。",
+                    "録音を分析し、ルールに従って数値のみで回答してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
                 
-                res_text = response.text
-                match = re.search(r"最終結果：\[(.*?)\]", res_text)
-                final_count = match.group(1) if match else "0"
+                if response.candidates and response.candidates[0].content.parts:
+                    count = response.text.strip()
+                else:
+                    count = "0"
                 
                 now = time.strftime("%Y-%m-%d %H:%M:%S")
                 if sheets_service:
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SPREADSHEET_ID, range="シート1!A1",
                         valueInputOption='USER_ENTERED', 
-                        body={'values': [[file.name, final_count, now]]}
+                        body={'values': [[file.name, count, now]]}
                     ).execute()
 
-                with st.expander(f"✅ {file.name} の分析詳細"):
-                    st.write(res_text)
-                
-                st.write(f"結果: **{final_count}**")
+                st.write(f"  ✅ {file.name} -> **{count}**")
+                results_table.append({"ファイル名": file.name, "結果": count, "状態": "✅ 完了"})
                 
             except Exception as e:
                 st.error(f"❌ {file.name} でエラー: {e}")
+                results_table.append({"ファイル名": file.name, "結果": "-", "状態": f"エラー"})
 
             progress_bar.progress((i + 1) / len(uploaded_files))
-        st.success("解析完了しました！")
+
+        st.success("すべての解析が終了しました！")
+        st.table(results_table)
