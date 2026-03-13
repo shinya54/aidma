@@ -9,7 +9,7 @@ GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SPREADSHEET_ID = "1iJXDxkFM7A-YGg1BvgtOhXS_AYdIN5goDQWHvSj79_k"
 # ===========================================
 
-st.set_page_config(page_title="爆速・テレアポ分析AI", page_icon="⚡")
+st.set_page_config(page_title="高精度・テレアポ分析AI", page_icon="⚡")
 genai.configure(api_key=GEMINI_API_KEY)
 
 def get_sheets_service():
@@ -25,96 +25,76 @@ def get_sheets_service():
         return None
 
 def get_working_model():
-    """あなたが持っている『動くロジック』そのままです"""
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        pro_models = [m for m in models if '1.5-pro' in m]
-        if pro_models:
-            latest = [m for m in pro_models if 'latest' in m]
-            return latest[0] if latest else pro_models[0]
         flash_models = [m for m in models if '1.5-flash' in m]
-        return flash_models[0] if flash_models else models[0]
-    except Exception as e:
-        return "models/gemini-1.5-pro-latest"
+        return flash_models[0] if flash_models else "models/gemini-1.5-flash"
+    except:
+        return "models/gemini-1.5-flash"
 
-st.title("⚡ チーム用：テレアポ高精度分析")
-st.success("一度全文を書き起こしてから判定する、高精度モードで動作中です。")
+st.title("⚡ テレアポ分析AI (精度特化・バグ防止Ver)")
 
 uploaded_files = st.file_uploader("mp3ファイルをドロップ", type=["mp3"], accept_multiple_files=True)
 
-if st.button("🚀 爆速解析スタート"):
+if st.button("🚀 解析スタート"):
     if not uploaded_files:
         st.error("ファイルを選択してください。")
     else:
         sheets_service = get_sheets_service()
-        correct_model_name = get_working_model()
+        model_name = get_working_model()
         
-        safe_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        # --- 判定基準を極限まで具体化したプロンプト ---
+        system_prompt = """あなたは営業専門の監査官です。
+録音を聞き、以下の【1セットの定義】に合致する箇所がいくつあるか数えてください。
 
-        # ★ここからプロンプトを変更（高精度版）★
-        system_prompt = """あなたはプロの営業監査官です。
-以下の手順で、テレアポ録音の「切り返し」を分析してください。
+【1セットの定義】
+以下のAとBが「この順番で」行われた場合のみ、1回とカウントします。
+A. 顧客が「結構です」「いらない」「間に合っている」と拒絶する。
+B. その直後に、営業が【具体的な日程や時間の打診】を行う。
 
-【手順】
-1. 録音内容をすべて文字起こししてください。
-2. 文字起こしから「顧客の断り」と、その直後の「営業による会話継続＋日程打診」のセットを探します。
-3. そのセットが何回あったか数えてください。アポ成功なら数値に「⚪︎」を付けます。
+※重要：単に商品の説明を続けたり、不在を確認したりするだけではカウントしないでください。必ず「日程の打診」を伴う必要があります。
 
 【出力形式】
-まず文字起こしを書き出し、最後に必ず「最終結果：[判定値]」という形式で締めてください。
-例：最終結果：[1⚪︎]"""
+1. 判定の根拠（例：〇分〇秒で拒絶。その直後に〇〇と日程を打診したため1回と判定）
+2. 不在や単なる説明のため除外した理由（もしあれば）
+3. 最終結果：[数値]（アポ成功なら1⚪︎）"""
 
         model = genai.GenerativeModel(
-            model_name=correct_model_name,
-            generation_config={"temperature": 0},
-            safety_settings=safe_settings,
+            model_name=model_name,
+            generation_config={"temperature": 0, "max_output_tokens": 800},
             system_instruction=system_prompt
         )
         
         progress_bar = st.progress(0)
-        results_table = []
         
         for i, file in enumerate(uploaded_files):
-            st.write(f"⏳ {file.name} を分析中... ({i+1}/{len(uploaded_files)})")
-            
+            st.write(f"⏳ {file.name} を分析中...")
             try:
                 response = model.generate_content([
-                    "ルールに従って、文字起こしと判定を行ってください。",
+                    "録音を分析し、最終結果：[数値] の形式で出力してください。",
                     {"mime_type": "audio/mp3", "data": file.getvalue()}
                 ])
                 
-                full_text = response.text
+                res_text = response.text
+                match = re.search(r"最終結果：\[(.*?)\]", res_text)
+                final_count = match.group(1) if match else "0"
                 
-                # AIが書いた文字の中から [ ] の中身（1⚪︎など）を抜き出す
-                match = re.search(r"最終結果：\[(.*?)\]", full_text)
-                count = match.group(1) if match else "0"
-                
-                # スプシ書き込み
+                # スプシ保存
                 now = time.strftime("%Y-%m-%d %H:%M:%S")
                 if sheets_service:
                     sheets_service.spreadsheets().values().append(
                         spreadsheetId=SPREADSHEET_ID, range="シート1!A1",
                         valueInputOption='USER_ENTERED', 
-                        body={'values': [[file.name, count, now]]}
+                        body={'values': [[file.name, final_count, now]]}
                     ).execute()
 
-                st.write(f"  ✅ {file.name} -> **{count}**")
-                # 画面で文字起こしも見れるようにしました
-                with st.expander("分析詳細を表示"):
-                    st.write(full_text)
-                    
-                results_table.append({"ファイル名": file.name, "回数": count, "状態": "✅ 完了"})
+                with st.expander(f"✅ {file.name} の分析根拠"):
+                    st.write(res_text)
+                
+                st.write(f"結果: **{final_count}**")
                 
             except Exception as e:
                 st.error(f"❌ {file.name} でエラー: {e}")
-                results_table.append({"ファイル名": file.name, "回数": "-", "状態": f"エラー"})
 
             progress_bar.progress((i + 1) / len(uploaded_files))
-
-        st.success("すべての解析が終了しました！")
-        st.table(results_table)
+        st.success("解析完了！")
